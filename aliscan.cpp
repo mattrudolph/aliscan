@@ -6,19 +6,17 @@
 #include <fstream>
 #include <sstream>
 #include <math.h>
-//#include <thread>
 #include <limits>
 #include <stdio.h>
 #include <stdlib.h>
-//#include "./ni4882.h"
 #include <bitset>
 #include <vector>
 #include <stdint.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <gpib/ib.h>
 
-//#pragma comment (lib , "winmm.lib")
+#include <gpib/ib.h>
+#include <alibavaClient.h>
 
 struct coord //simple struct used in a couple places
 {
@@ -27,7 +25,7 @@ struct coord //simple struct used in a couple places
 };
 
 template<typename tocon> std::string ToString(tocon x);  //function used to convert some type tocon (int, float etc) to a standard string
-void AlibavaRun(std::string outputFile, int nevents, int evtBuffer, std::string cnfg = "");//this runs Alibava (may need to be replaced with acquire setup)
+void AlibavaRun(Alibava & client, std::string outputFile, int nevents, int evtBuffer, std::string cnfg = "");//this runs Alibava (may need to be replaced with acquire setup)
 int Play(int Num); //provides audio feedback to the user
 void GPIBCleanup(int Dev, const char * ErrorMsg); //
 double XmmToSteps(double Xmm); //converts Xaxis mm to XY stage steps (using most recent calibration)
@@ -55,343 +53,365 @@ void CleanXY(int Dev); //syncs unidex to TotalDisplacement
 #define EOSMODE               0     // Disable the EOS mode
 
 
-/*
-char ErrorMnemonic[29][5] = { "EDVR", "ECIC", "ENOL", "EADR", "EARG",
-"ESAC", "EABO", "ENEB", "EDMA", "",
-"EOIP", "ECAP", "EFSO", "", "EBUS",
-"ESTB", "ESRQ", "", "", "",
-"ETAB", "ELCK", "EARM", "EHDL", "",
-"", "EWIP", "ERST", "EPWR" }; //GPIB errors
-
-int Dev = ibdev(BDINDEX, PRIMARY_ADDR_OF_DMM, NO_SECONDARY_ADDR,TIMEOUT, EOTMODE, EOSMODE);//initialization of the device	
-*/
 int main()
 {
-	std::cout<<"STARTING ALISCAN"<<std::endl;
-char ErrorMnemonic[29][5] = { "EDVR", "ECIC", "ENOL", "EADR", "EARG",
-"ESAC", "EABO", "ENEB", "EDMA", "",
-"EOIP", "ECAP", "EFSO", "", "EBUS",
-"ESTB", "ESRQ", "", "", "",
-"ETAB", "ELCK", "EARM", "EHDL", "",
-"", "EWIP", "ERST", "EPWR" }; //GPIB errors
+  std::cout<<"STARTING ALISCAN"<<std::endl;
+  char ErrorMnemonic[29][5] = { "EDVR", "ECIC", "ENOL", "EADR", "EARG",
+				"ESAC", "EABO", "ENEB", "EDMA", "",
+				"EOIP", "ECAP", "EFSO", "", "EBUS",
+				"ESTB", "ESRQ", "", "", "",
+				"ETAB", "ELCK", "EARM", "EHDL", "",
+				"", "EWIP", "ERST", "EPWR" }; //GPIB errors
 
-int Dev = ibdev(BDINDEX, PRIMARY_ADDR_OF_DMM, NO_SECONDARY_ADDR,TIMEOUT, EOTMODE, EOSMODE);//initialization of the device	
- std::cout<<"Device initialized"<<std::endl;
+  int Dev = ibdev(BDINDEX, PRIMARY_ADDR_OF_DMM, NO_SECONDARY_ADDR,TIMEOUT, EOTMODE, EOSMODE);//initialization of the device	
+  std::cout<<"Device " << Dev << " initialized" <<std::endl;
 
-	std::vector<coord> DispVec;
+  std::vector<coord> DispVec;
 
-	double absPosX = 0, absPosY = 0;
-	double histX = -1, histY = -1; //determining the origin
+  double absPosX = 0, absPosY = 0;
+  double histX = -1, histY = -1; //determining the origin
 
-	std::ifstream dhist;
-	std::ifstream totDisp;
-	double totDispX = -1, totDispY = -1;
-	totDisp.open("NetDisp.loc");
-	if (totDisp.good())
-	{
-		totDisp >> totDispX >> totDispY;
-	}
-	else
-	{
-		std::ofstream creation;
-		creation.open("./NetDisp.loc");
-		creation << "-1  -1" << std::endl;
-	}
+  std::ifstream dhist;
+  std::ifstream totDisp;
+  double totDispX = -1, totDispY = -1;
+  totDisp.open("NetDisp.loc");
+  if (totDisp.good())
+    {
+      totDisp >> totDispX >> totDispY;
+    }
+  else
+    {
+      std::ofstream creation;
+      creation.open("./NetDisp.loc");
+      creation << "-1  -1" << std::endl;
+    }
 
-	//GET THE ORIGIN AND DECIDE WHAT HIST X, HIST Y SHOULD BE ///////////////////////////////////////////////////////
-	std::ofstream dout;
-	dhist.open("./Hist.loc");
+  //GET THE ORIGIN AND DECIDE WHAT HIST X, HIST Y SHOULD BE ///////////////////////////////////////////////////////
+  std::ofstream dout;
+  dhist.open("./Hist.loc");
 	
-	std::string runDirectory = "/home/alibava-user/AlibavaRun/";
-	dout.open((runDirectory + "console.out").c_str());
+  std::string runDirectory = "/home/alibava-user/AlibavaRun/";
+  dout.open((runDirectory + "console.out").c_str());
 
 
-	if (dhist.good() )
-	{
+  if (dhist.good() )
+    {
+      
+      dhist >> histX >> histY;
+      dhist.close();
 		
-		dhist >> histX >> histY;
-		dhist.close();
+      std::cout << "Position from Hist.loc: " << histX << ", " << histY << std::endl;
+      //historic "checksum"
+      std::cout<<"COMMUNICATING WITH DEVICE"<<std::endl;
+      std::vector<double> initPos = ReadUnidexPosition(Dev);
+
+      //TODO protect missing absolute.loc when have Hist.loc
+      std::ifstream prevAbs;
+      prevAbs.open("Absolute.loc");
+      prevAbs >> absPosX >> absPosY;
+      prevAbs.close();
+
+      // totDispX from NetDisp.loc which intializes to -1,-1 and is overwritten by WriteUniPos()
+      
+      // so if Hist.loc position X + displacement from NetDisp.loc is within 1 step of Absolute.loc
+      // same for Y 
+      // Then rewrite Hist.loc to match Absolute.loc
+      if (histX + totDispX - 1 <= absPosX && histX + totDispX + 1 >= absPosX && histY + totDispY - 1 <= absPosY && histY + totDispY + 1 >= absPosY)
+	{
+	  std::ofstream overwrt;
+	  overwrt.open("Hist.loc");
+	  overwrt << absPosX << "  " << absPosY << std::endl;
+	  overwrt.close();
+	}
+
+      if (initPos[0] - 1 <= totDispX && initPos[0] + 1 >= totDispX && initPos[1] - 1 <= totDispY && initPos[1] + 1 >= totDispY) //the unidex report the same as historical within rounding error
+	{
+	  CleanXY(Dev); //sync up unidex and write out NetDisp.loc
+	}
+      else if (initPos[0] == 0 && initPos[1] == 0) //UNIDEX in STARTUP STATE OR HOME POSITION....
+	{
+	  int Home = 0;
+	  std::cout << "Has the home Position been hit on the unidex?(1=yes 0=no 2=Unsure)" << std::endl; //disentangle the meaning of 0,0 readout
+	  Userin(Home);
+
+	  if (Home == 1) //the UNIDEX HAS BEEN SENT HOME AND THUS 0,0 IS HOME
+	    {
+	      std::ofstream mod;
+	      mod.open("Hist.loc");
+	      mod << "0  0" << std::endl;
+	      mod.close();
+	      mod.open("Absolute.loc");
+	      mod << "0  0" << std::endl;
+	      mod.close();
+	      CleanXY(Dev);
+	    }
+	  else if (Home == 0)//the machine has most likely just been turned on and the origin is found in the Absolute.loc file....do nothing
+	    {
+
+	    }
+	  else //someone or something may have messed with the position safeguard the 0,0 by making histX,histY -1,-1 (a point it can never reach by natural means) and deleting the Absolute.loc file
+	    {
+	      std::remove("Absolute.loc");
+	      std::remove("Hist.loc");
+	      std::remove("TotalDisp.loc");
+	      histX = -1;
+	      histY = -1;
+	    }
+
+	}
+      else //something has gone wrong (odds are someone has moved the unidex!) to keep things proper report the error histX, histY = -1,-1 and deleting  Absolute.loc
+	{
+	  std::cout << "*****************************************************************************" << std::endl; dout << "*****************************************************************************" << std::endl;
+	  std::cout << "WARNING! ABSOLUTE CHECKSUM FAILURE: UNIDEX HAS BEEN MOVED MANUALLY!!" << std::endl; dout << "WARNING! UNIDEX HAS BEEN MOVED MANUALLY!!" << std::endl;
+	  std::cout << "DELETING LOCATION AND RESETTING" << std::endl; dout << "DELETING LOCATION AND RESETTING" << std::endl;
+	  std::cout << "*****************************************************************************" << std::endl; dout << "*****************************************************************************" << std::endl;
+	  std::cout << std::endl << std::endl; dout << std::endl << std::endl;
+	  std::remove("Absolute.loc");
+	  std::remove("Hist.loc");
+	  std::remove("TotalDisp.loc");
+	  histX = -1;
+	  histY = -1;
+	}
+    }
+  if (histX != -1 && histY != -1) //if in error the initial position is the absolute position
+    {
+      std::vector<double> initAbsPos = getAbsPosition(Dev);
+      absPosX = initAbsPos[0];
+      absPosY = initAbsPos[1];
+    }
+
+
+
+
+  bool LoadDispFile = false;
+  float initSpeed = 1000;
+  float XSpeed = 1000;
+  float YSpeed = 1000;
+
+
+
+  int tsteps = 0;//number of iterations to run
+  double startX, startY, dispX, dispY;
+
+
+  //USER input///////////////////////////////////////////////////
+  std::cout << "total number of iterations: " << std::endl; dout << "total number of iterations: " << std::endl;
+  Userin(tsteps);
+  dout << tsteps << std::endl;
+
+
+  std::cout << std::endl; dout << std::endl;
+  std::cout << "starting X displacement (steps): " << std::endl; dout << "starting X displacement (steps): " << std::endl;
+  Userin(startX); //the initial X displacement in step that occurs BEFORE any run of Alibava
+  dout << startX << std::endl;
+
+  std::cout << std::endl; dout << std::endl;
+  std::cout << "starting Y displacement (steps): " << std::endl; dout << "starting Y displacement (steps): " << std::endl;
+  Userin(startY); //the initial Y displacement in step that occurs BEFORE any run of Alibava
+  dout << startY << std::endl;
+
+
+  std::cout << std::endl; dout << std::endl;
+  std::cout << "Load displacement file?(1=yes 0=no)" << std::endl;
+  Userin(LoadDispFile); //the Disp.cnfg file should be used where Disp.cnfg is a plain text file in which there are 3 columns with each line being read in sequence
+
+  //[number of times to do the following displacement]   [XDisp in um]  [YDisp in um]
+
+
+
+  if (!LoadDispFile)//if the user is not using the Disp.cnfg it will perform each displacement below after each run for tsteps iterations 
+    {
+      std::cout << std::endl; dout << std::endl;
+      std::cout << "X displacement (um): " << std::endl; dout << "X displacement (um): " << std::endl;
+      Userin(dispX); //a positive value sends the box to the left (laser to the right)
+      dout << dispX << std::endl;
+
+      std::cout << std::endl; dout << std::endl;
+      std::cout << "Y displacement (um):" << std::endl; dout << "Y displacement (um):" << std::endl;
+      Userin(dispY);//a positive value sends the box forward (laser towards the back)
+      dout << dispY << std::endl;
+
+      for (int i = 0; i < tsteps; i++)//load the displacement command vecotr
+	{
+	  coord* disp = new coord;
+	  disp->x = dispX;
+	  disp->y = dispY;
+	  DispVec.push_back(*disp);
+	}
+      system("clear");
+    }
+  else
+    {
+      system("clear");
+      int total = 0;
+      int time;
+      double xval, yval;
+      //std::ifstream din;
+      //din.open("Disp.cnfg");
+      std::ifstream infile("Disp.cnfg");
+      //check for valid file here
+      while (infile >> time >> xval >> yval)//load the vector
+	{
+	  total += time;
+	  for (int i = 0; i < time; i++)
+	    {
+	      coord* disp = new coord;
+	      disp->x = xval;
+	      disp->y = yval;
+	      DispVec.push_back(*disp);
+	      //std::cout << xval << " " << yval << " " << DispVec.size() << std::endl;
+	    }
+	}
+      if (tsteps != total + 1)//Disp.cnfg is law! tsteps will be ignored in this mode but this warning serves as a diagnostic
+	{
+	  std::cout << "*****************************************************************************" << std::endl; dout << "*****************************************************************************" << std::endl;
+	  std::cout << "WARNING! FILE DOES NOT CONTAIN THE SAME NUMBER OF COMMANDS AS ITERATIONS" << std::endl; dout << "WARNING! FILE DOES NOT CONTAIN THE SAME NUMBER OF COMMANDS AS ITERATIONS" << std::endl;
+	  std::cout << "OVERWRITING ITERATIONS WITH TOTAL COMMANDS FOUND IN: Disp.cnfg" << std::endl; dout << "OVERWRITING ITERATIONS WITH TOTAL COMMANDS FOUND IN: Disp.cnfg" << std::endl;
+	  std::cout << "*****************************************************************************" << std::endl; dout << "*****************************************************************************" << std::endl;
+	  std::cout << std::endl << std::endl; dout << std::endl << std::endl;
+	}
+      tsteps = total + 1;
+
+      PrintDispVec(DispVec, dout);
+    }
+
+  ///////////////////////////////////////////////////////////////////////////
+  //std::string cmdString;
+
+  //LOAD THE DISPS INTO A VECTOR
+
+  resetGPIBDevice(Dev); //must be done first to avoid issues with input buffer not clearing
+
+  //std::thread t1(XYHome);
+  //t1.join();
+  if (histX == -1 || histY == -1) //if it does not remember where it is at send it home to reset
+    {
+      std::cout << "RESETTING XY POSITION" << std::endl; dout << "RESETTING XY POSITION" << std::endl;
+      XYHome(Dev);//Sends the XY stage to the home position
+      CleanXY(Dev);
+    }
+  if (startX != 0 || startY != 0)
+    {
+
+      std::cout << "MOVING TO INITIAL POSITION" << std::endl; dout << "MOVING TO INITIAL POSITION" << std::endl;
+      DisplaceSteps(Dev, absPosX, absPosY, startX, startY, XSpeed, YSpeed);//takes the speed and initial coordinates and displaces the XY stage that number of steps at the given speed; also updates positions
+      WriteAbsPos(Dev);
+      WriteUniPos(Dev);
+      std::vector<double> AbsPos = getAbsPosition(Dev);
+      absPosX = AbsPos[0];
+      absPosY = AbsPos[1];
+    }
+  std::cout << "Aliscan will now perform " << tsteps << " iterations..." << std::endl; dout << "Aliscan will now perform " << tsteps << " iterations..." << std::endl;
 		
-		std::cout<<histX<<" "<<histY<<std::endl;
-		//historic "checksum"
-		std::cout<<"COMMUNICATING WITH DEV"<<std::endl;
-		std::vector<double> initPos = ReadUnidexPosition(Dev);
-		std::ifstream prevAbs;
-		prevAbs.open("Absolute.loc");
-		prevAbs >> absPosX >> absPosY;
-		prevAbs.close();
-		if (histX + totDispX - 1 <= absPosX && histX + totDispX + 1 >= absPosX && histY + totDispY - 1 <= absPosY && histY + totDispY + 1 >= absPosY)
-		{
-			std::ofstream overwrt;
-			overwrt.open("Hist.loc");
-			overwrt << absPosX << "  " << absPosY << std::endl;
-			overwrt.close();
-		}
-		if (initPos[0] - 1 <= totDispX && initPos[0] + 1 >= totDispX && initPos[1] - 1 <= totDispY && initPos[1] + 1 >= totDispY) //the unidex report the same as historical within rounding error
-		{
-			CleanXY(Dev);
-		}
-		else if (initPos[0] == 0 && initPos[1] == 0) //UNIDEX in STARTUP STATE OR HOME POSITION....
-		{
-			int Home = 0;
-			std::cout << "Has the home Position been hit on the unidex?(1=yes 0=no 2=Unsure)" << std::endl; //disentangle the meaning of 0,0 readout
-			Userin(Home);
 
-			if (Home == 1) //the UNIDEX HAS BEEN SENT HOME AND THUS 0,0 IS HOME
-			{
-				std::ofstream mod;
-				mod.open("Hist.loc");
-				mod << "0  0" << std::endl;
-				mod.close();
-				mod.open("Absolute.loc");
-				mod << "0  0" << std::endl;
-				mod.close();
-				CleanXY(Dev);
-			}
-			else if (Home == 0)//the machine has most likely just been turned on and the origin is found in the Absolute.loc file....do nothing
-			{
+  //ALIBAVA RUN BELOW
+  //std::cout<<"Please click reconnect and ensure the alibava board is talking to this program properly"<<std::endl;
 
-			}
-			else //someone or something may have messed with the position safeguard the 0,0 by making histX,histY -1,-1 (a point it can never reach by natural means) and deleting the Absolute.loc file
-			{
-				std::remove("Absolute.loc");
-				std::remove("Hist.loc");
-				std::remove("TotalDisp.loc");
-				histX = -1;
-				histY = -1;
-			}
+  Alibava client;
+  const char *uri = "http://localhost:10000";
+  client.connect(uri);
 
-		}
-		else //something has gone wrong (odds are someone has moved the unidex!) to keep things proper report the error histX, histY = -1,-1 and deleting  Absolute.loc
-		{
-			std::cout << "*****************************************************************************" << std::endl; dout << "*****************************************************************************" << std::endl;
-			std::cout << "WARNING! ABSOLUTE CHECKSUM FAILURE: UNIDEX HAS BEEN MOVED MANUALLY!!" << std::endl; dout << "WARNING! UNIDEX HAS BEEN MOVED MANUALLY!!" << std::endl;
-			std::cout << "DELETING LOCATION AND RESETTING" << std::endl; dout << "DELETING LOCATION AND RESETTING" << std::endl;
-			std::cout << "*****************************************************************************" << std::endl; dout << "*****************************************************************************" << std::endl;
-			std::cout << std::endl << std::endl; dout << std::endl << std::endl;
-			std::remove("Absolute.loc");
-			std::remove("Hist.loc");
-			std::remove("TotalDisp.loc");
-			histX = -1;
-			histY = -1;
-		}
-	}
-	if (histX != -1 && histY != -1) //if in error the initial position is the absolute position
-	{
-		std::vector<double> initAbsPos = getAbsPosition(Dev);
-		absPosX = initAbsPos[0];
-		absPosY = initAbsPos[1];
-	}
+  int resetStat = client.Reset();
+  if(resetStat) {
+    std::cerr << "Error resetting Alibava soap client, code = " << resetStat << std::endl;
+    return resetStat;
+  }
 
+  ns1__Status status;
+  client.getStatus(status);
+  std::cout << "Status:" << std::endl;
+  std::cout << status << std::endl;
 
-
-
-	bool LoadDispFile = false;
-	float initSpeed = 1000;
-	float XSpeed = 1000;
-	float YSpeed = 1000;
-
-
-
-	int tsteps = 0;//number of iterations to run
-	double startX, startY, dispX, dispY;
-
-
-	//USER input///////////////////////////////////////////////////
-	std::cout << "total number of iterations: " << std::endl; dout << "total number of iterations: " << std::endl;
-	Userin(tsteps);
-	dout << tsteps << std::endl;
-
-
-	std::cout << std::endl; dout << std::endl;
-	std::cout << "starting X displacement (steps): " << std::endl; dout << "starting X displacement (steps): " << std::endl;
-	Userin(startX); //the initial X displacement in step that occurs BEFORE any run of Alibava
-	dout << startX << std::endl;
-
-	std::cout << std::endl; dout << std::endl;
-	std::cout << "starting Y displacement (steps): " << std::endl; dout << "starting Y displacement (steps): " << std::endl;
-	Userin(startY); //the initial Y displacement in step that occurs BEFORE any run of Alibava
-	dout << startY << std::endl;
-
-
-	std::cout << std::endl; dout << std::endl;
-	std::cout << "Load displacement file?(1=yes 0=no)" << std::endl;
-	Userin(LoadDispFile); //the Disp.cnfg file should be used where Disp.cnfg is a plain text file in which there are 3 columns with each line being read in sequence
-
-	//[number of times to do the following displacement]   [XDisp in um]  [YDisp in um]
-
-
-
-	if (!LoadDispFile)//if the user is not using the Disp.cnfg it will perform each displacement below after each run for tsteps iterations 
-	{
-		std::cout << std::endl; dout << std::endl;
-		std::cout << "X displacement (um): " << std::endl; dout << "X displacement (um): " << std::endl;
-		Userin(dispX); //a positive value sends the box to the left (laser to the right)
-		dout << dispX << std::endl;
-
-		std::cout << std::endl; dout << std::endl;
-		std::cout << "Y displacement (um):" << std::endl; dout << "Y displacement (um):" << std::endl;
-		Userin(dispY);//a positive value sends the box forward (laser towards the back)
-		dout << dispY << std::endl;
-
-		for (int i = 0; i < tsteps; i++)//load the displacement command vecotr
-		{
-			coord* disp = new coord;
-			disp->x = dispX;
-			disp->y = dispY;
-			DispVec.push_back(*disp);
-		}
-		system("clear");
-	}
-	else
-	{
-		system("clear");
-		int total = 0;
-		int time;
-		double xval, yval;
-		//std::ifstream din;
-		//din.open("Disp.cnfg");
-		std::ifstream infile("Disp.cnfg");
-		//check for valid file here
-		while (infile >> time >> xval >> yval)//load the vector
-		{
-			total += time;
-			for (int i = 0; i < time; i++)
-			{
-				coord* disp = new coord;
-				disp->x = xval;
-				disp->y = yval;
-				DispVec.push_back(*disp);
-				//std::cout << xval << " " << yval << " " << DispVec.size() << std::endl;
-			}
-		}
-		if (tsteps != total + 1)//Disp.cnfg is law! tsteps will be ignored in this mode but this warning serves as a diagnostic
-		{
-			std::cout << "*****************************************************************************" << std::endl; dout << "*****************************************************************************" << std::endl;
-			std::cout << "WARNING! FILE DOES NOT CONTAIN THE SAME NUMBER OF COMMANDS AS ITERATIONS" << std::endl; dout << "WARNING! FILE DOES NOT CONTAIN THE SAME NUMBER OF COMMANDS AS ITERATIONS" << std::endl;
-			std::cout << "OVERWRITING ITERATIONS WITH TOTAL COMMANDS FOUND IN: Disp.cnfg" << std::endl; dout << "OVERWRITING ITERATIONS WITH TOTAL COMMANDS FOUND IN: Disp.cnfg" << std::endl;
-			std::cout << "*****************************************************************************" << std::endl; dout << "*****************************************************************************" << std::endl;
-			std::cout << std::endl << std::endl; dout << std::endl << std::endl;
-		}
-		tsteps = total + 1;
-
-		PrintDispVec(DispVec, dout);
-	}
-
-	///////////////////////////////////////////////////////////////////////////
-	//std::string cmdString;
-
-	//LOAD THE DISPS INTO A VECTOR
-
-	resetGPIBDevice(Dev); //must be done first to avoid issues with input buffer not clearing
-
-	//std::thread t1(XYHome);
-	//t1.join();
-	if (histX == -1 || histY == -1) //if it does not remember where it is at send it home to reset
-	{
-		std::cout << "RESETTING XY POSITION" << std::endl; dout << "RESETTING XY POSITION" << std::endl;
-		XYHome(Dev);//Sends the XY stage to the home position
-		CleanXY(Dev);
-	}
-	if (startX != 0 || startY != 0)
+  for (int i = 0; i < tsteps; i++)
+    {
+      //RESET THE BOARD HERE
+      //myBoard.reset(1);
+      double currentXdisp, currentYdisp;
+      if (i != tsteps - 1)
 	{
 
-		std::cout << "MOVING TO INITIAL POSITION" << std::endl; dout << "MOVING TO INITIAL POSITION" << std::endl;
-		DisplaceSteps(Dev, absPosX, absPosY, startX, startY, XSpeed, YSpeed);//takes the speed and initial coordinates and displaces the XY stage that number of steps at the given speed; also updates positions
-		WriteAbsPos(Dev);
-		WriteUniPos(Dev);
-		std::vector<double> AbsPos = getAbsPosition(Dev);
-		absPosX = AbsPos[0];
-		absPosY = AbsPos[1];
+	  currentXdisp = DispVec[i].x;
+	  currentYdisp = DispVec[i].y;
 	}
-		std::cout << "Aliscan will now perform " << tsteps << " iterations..." << std::endl; dout << "Aliscan will now perform " << tsteps << " iterations..." << std::endl;
-		
+      std::cout << std::endl << std::endl; dout << std::endl << std::endl;
 
-	//ALIBAVA RUN BELOW
-		std::cout<<"Please click reconnect and ensure the alibava board is talking to this program properly"<<std::endl;
-		system("alibava-gui");
-		for (int i = 0; i < tsteps; i++)
-		{
-			//RESET THE BOARD HERE
-			//myBoard.reset(1);
-			double currentXdisp, currentYdisp;
-			if (i != tsteps - 1)
-			{
+      std::string runname = "log" + ToString(int((i + 1))) + ".dat";
 
-				currentXdisp = DispVec[i].x;
-				currentYdisp = DispVec[i].y;
-			}
-			std::cout << std::endl << std::endl; dout << std::endl << std::endl;
-
-			std::string runname = "log" + ToString(int((i + 1))) + ".dat";
-
-			std::cout << "### SCAN ITERATION: " << i + 1 << std::endl; dout << "### SCAN ITERATION: " << i + 1 << std::endl;
-			std::cout << "approx. position(steps): " << absPosX << " , " << absPosY << std::endl; dout << "approx. position(steps): " << absPosX << " , " << absPosY << std::endl;
+      std::cout << "### SCAN ITERATION: " << i + 1 << std::endl; dout << "### SCAN ITERATION: " << i + 1 << std::endl;
+      std::cout << "approx. position(steps): " << absPosX << " , " << absPosY << std::endl; dout << "approx. position(steps): " << absPosX << " , " << absPosY << std::endl;
 
 
-			std::ofstream myFile;
-			std::string FileName = runDirectory + runname; //given the run directory/run name construct the log file's name
-			myFile.open(FileName.c_str()); //create/open the log file for writing
-			myFile.close();
+      std::ofstream myFile;
+      std::string FileName = runDirectory + runname; //given the run directory/run name construct the log file's name
+      myFile.open(FileName.c_str()); //create/open the log file for writing
+      myFile.close();
 
 
-			std::string file = " --out=";
-			file = file + FileName;
-			std::cout << file << std::endl; //logging of log location (logception)
-			dout << file << std::endl;
+      std::string file = " --out=";
+      file = file + FileName;
+      std::cout << file << std::endl; //logging of log location (logception)
+      dout << file << std::endl;
 
-			AlibavaRun(FileName, 10000, 1,"default.ini"); //file,nevt,buff
-			std::cout<<"Alibava has closed!" << std::endl;
-			//usleep(10000);
+      AlibavaRun(client, FileName, 10000, 1,"default.ini"); //file,nevt,buff
+      //usleep(10000);
 
-			if (i != tsteps - 1) //for all but the last step 
-			{
-				//Play(2);
-			  //				std::cout << "Reset the Alibava board and hit any key to continue" << std::endl; dout << "Reset the Alibava board and hit any key to continue" << std::endl;
-				std::cout<<"beginning sync" << std::endl;			  	
-				//std::cin.sync();
-				std::cout<<"end sync" << std::endl;
-			  //	int x;
-			  //	std::cin>>x;
-				  /*int pause = 0;
-				while (!pause)  //gating the reset of Alibava and the beginning of the next iteration
-				{
-					pause =kbhit();
-				}
-				getch();//manual gating for board reset
-				//displace!
-				*/
-				Displaceum(Dev, absPosX, absPosY, currentXdisp, currentYdisp, XSpeed, YSpeed); //displace by x,y in microns before next iteration
-				WriteAbsPos(Dev);//update location
-				WriteUniPos(Dev);
-				std::vector<double> AbsPos = getAbsPosition(Dev);//update location
-				absPosX = AbsPos[0];
-				absPosY = AbsPos[1];
-			}
-                      // usleep(100000);
-		}
-	//Play(3);
-	dout.close();
+      if (i != tsteps - 1) //for all but the last step 
+	{
+	  //Play(2);
+	  //				std::cout << "Reset the Alibava board and hit any key to continue" << std::endl; dout << "Reset the Alibava board and hit any key to continue" << std::endl;
+	  //	  std::cout<<"beginning sync" << std::endl;			  	
+	  //std::cin.sync();
+	  //	  std::cout<<"end sync" << std::endl;
+	  //	int x;
+	  //	std::cin>>x;
+	  /*int pause = 0;
+	    while (!pause)  //gating the reset of Alibava and the beginning of the next iteration
+	    {
+	    pause =kbhit();
+	    }
+	    getch();//manual gating for board reset
+	    //displace!
+	    */
+	  Displaceum(Dev, absPosX, absPosY, currentXdisp, currentYdisp, XSpeed, YSpeed); //displace by x,y in microns before next iteration
+	  WriteAbsPos(Dev);//update location
+	  WriteUniPos(Dev);
+	  std::vector<double> AbsPos = getAbsPosition(Dev);//update location
+	  absPosX = AbsPos[0];
+	  absPosY = AbsPos[1];
+	}
+      // usleep(100000);
+    }
+  //Play(3);
+  dout.close();
 	
-	std::vector < double > FinalPos = getAbsPosition(Dev);//final position recording
-	dout.open("Hist.loc");
-	dout << FinalPos[0] << "  " << FinalPos[1];
-	dout.close();
-	dout.open("Absolute.loc");
-	dout << FinalPos[0] << "  " << FinalPos[1];
-	dout.close();
+  std::vector < double > FinalPos = getAbsPosition(Dev);//final position recording
+  dout.open("Hist.loc");
+  dout << FinalPos[0] << "  " << FinalPos[1];
+  dout.close();
+  dout.open("Absolute.loc");
+  dout << FinalPos[0] << "  " << FinalPos[1];
+  dout.close();
 	
-	return 0;
+  return 0;
 }
+
 template<typename tocon> std::string ToString(tocon x)
 {
 	std::ostringstream result;
-	result <<x;
+	result << x;
 	return result.str();
 }
 
-void AlibavaRun(std::string outputFile, int nevents, int evtBuffer,std::string cnfg)//run Alibava with options both fixed and user provided
+void AlibavaRun(Alibava & client, std::string outputFile, int nevents, int evtBuffer,std::string cnfg)//run Alibava with options both fixed and user provided
 {
+
+  client.setDataFile(outputFile.c_str());
+  int ret = client.startLaserRun(2000, false,512,-512,512,1);
+  ns1__Status status;
+    client.getStatus(status);
+    std::cout << "Status:" << std::endl;
+    std::cout << status << std::endl;
+
 	std::stringstream stream;
 	stream	<< "alibava-gui"
 		//////////////////ENTER ALIBAVA OPTIONS HERE/////////////////////
@@ -593,11 +613,11 @@ std::vector<double> ReadUnidexPosition(int Dev)//reading the position off unidex
 		outputy[i] = 'a';
 	}
 
-	//std::cout<<"ReadUnidex Write 1" <<std::endl;
+	std::cout<<"ReadUnidex Write 1" <<std::endl;
 	ibwrt(Dev, (cmdString.data()), cmdString.length() + 1);
-	//std::cout<<"ReadUnidex Read 1" <<std::endl;
+	std::cout<<"ReadUnidex Read 1" <<std::endl;
 	ibrd(Dev, outputx, 10000);
-	//std::cout<<"ReadUnidex Done Read1" <<std::endl;
+	std::cout<<"ReadUnidex Done Read1" <<std::endl;
 
 	std::string xpos = "";
 
@@ -609,9 +629,9 @@ std::vector<double> ReadUnidexPosition(int Dev)//reading the position off unidex
 	}
 
 	cmdString = "Py";
-	//std::cout<<"ReadUnidex Write 2" <<std::endl;
+	std::cout<<"ReadUnidex Write 2" <<std::endl;
 	ibwrt(Dev, (cmdString.data()), cmdString.length() + 1);
-	//std::cout<<"ReadUnidex Read 2" <<std::endl;	
+	std::cout<<"ReadUnidex Read 2" <<std::endl;	
 	ibrd(Dev, outputy, 10000);
 
 	std::string ypos = "";

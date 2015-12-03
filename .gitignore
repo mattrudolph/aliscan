@@ -1,3 +1,13 @@
+#Old files
+*~
+
+# Unidex location tracking:
+*.loc
+
+#plots
+*.png
+plots
+
 # Compiled Object files
 *.slo
 *.lo
