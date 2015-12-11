@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
 from struct import *
-import ROOT
 
 def read_file_header( f ):
     #apparently the time is time_t and *NOT* uint32 like the manual says
@@ -59,7 +58,7 @@ def parse_datablock( data ):
     time = udata[2]
     temp = udata[3]
     header = [ udata[4:20], udata[148:164] ]
-    data = [ udata[20:148], udata[164:] ]
+    data =  [ udata[20:148],udata[164:] ]
     
     return value, clock, time, temp, header, data
     
@@ -75,38 +74,81 @@ def next_event( f ):
     (value, clock, time, temp, header, data) = parse_datablock(data)
     return data
 
-
-
 if __name__ == '__main__':
-    for j in range(1,41):
+    indir = '/home/alibava-user/data/test/LaserScan/0043/'
+
+    import sys
+    sys.argv.append( '-b' )
+
+    import os
+    plotdir = indir + 'plots'
+    if not os.path.exists(plotdir):
+        os.makedirs(plotdir)
+    
+    #get the run files in that dir
+    import re
+    datfiles = [f for f in os.listdir(indir) if re.match("log[0-9]+\.dat",f) is not None]
+    nfiles = len(datfiles)
+
+    import ROOT
+    c = ROOT.TCanvas()
+    c.SetGridx()
+    hped = ROOT.TH1F("pedestal","pedestal",128,-0.5,127.5)
+    hnoise = ROOT.TH1F("noise","noise",128,-0.5,127.5)
+    hits = ROOT.TH1F("hits","hits",64,63.5,127.5)
+    sigs = ROOT.TH1F("sigs","sigs",512,-512,512)
+
+
+
+    with open(indir+'console.out') as console:
+        for j in range(1,nfiles+1):
         
-        with open('/home/alibava-user/AlibavaRun/log%i.dat' % j) as f:
-            (timestamp, runtype, info, pedestal, noise) = read_file_header(f)
-            c = ROOT.TCanvas()
-            h = ROOT.TH1F("noise","noise",len(noise),-0.5,len(noise)-0.5)
-            for i,n in enumerate(noise[:128]):
-                h.SetBinContent(i+1,n)
-            h.Draw()
-            c.SaveAs("plots/noise_%02i.png" % j)
+            #find the iteration number
+            line = console.readline()
+            while re.match("### SCAN ITERATION: %i" % j, line) is None:
+                line = console.readline()
 
-            hits = ROOT.TH1F("hits","hits",len(noise),-0.5,len(noise)-0.5)
-            sigs = ROOT.TH1F("sigs","sigs",512,-512,512)
+            line = console.readline()
+            [x,y] = [float(pos) for pos in re.findall("[0-9]+\.[0-9]",line)]
 
-            ev = next_event(f)
-            while ev is not None:
 
-                for i,raw in enumerate(ev[0]):
-                    val = raw - pedestal[i]
-                    
-                    if val < 0 and abs(val) > 5*noise[i]  and abs(val) > 40:
-                        print "Hit on channel",i
-                        print "  Val =", val," noise =",noise[i]
-                        hits.Fill( i )
-                        sigs.Fill(val)
+            with open(indir+('log%i.dat' % j)) as f:
+                (timestamp, runtype, info, pedestal, noise) = read_file_header(f)
+
+                if(j == 1):
+                    for i,n in enumerate(pedestal[:128]):
+                        hped.SetBinContent(i+1,n)
+                    hped.Draw()
+                    c.SaveAs(plotdir+"/pedestal.png")
+
             
-                ev = next_event(f)
+                    for i,n in enumerate(noise[:128]):
+                        hnoise.SetBinContent(i+1,n)
+                    hnoise.Draw()
+                    c.SaveAs(plotdir+"/noise.png")
 
-            hits.Draw()
-            c.SaveAs("plots/hits_%02i.png" % j)
-            sigs.Draw()
-            c.SaveAs("plots/sigs_%02i.png" % j)
+                    print "n82=",noise[82],"; n83=",noise[83]
+
+                hits.Reset()
+                sigs.Reset()
+
+                ev = next_event(f)
+                while ev is not None:
+
+                    for i,raw in enumerate(ev[0]):
+                        if( i < 64):
+                            continue
+                        val = raw - pedestal[i]
+                    
+                        if val < 0 and abs(val) > 7*noise[i]:
+                            #print "Hit on channel",i
+                            #print "  Val =", val," noise =",noise[i]
+                            hits.Fill( i )
+                            sigs.Fill(val)
+            
+                    ev = next_event(f)
+
+                hits.Draw()
+                c.SaveAs(plotdir+("/hits_%04i.png" % j))
+                sigs.Draw()
+                c.SaveAs(plotdir+("/sigs_%04i.png" % j))

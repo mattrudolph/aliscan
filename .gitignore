@@ -4,8 +4,10 @@
 # Unidex location tracking:
 *.loc
 
-#plots
+# plots and logging
+*.log
 *.png
+*.pdf
 plots
 
 # Compiled Object files
@@ -36,3 +38,6 @@ plots
 *.exe
 *.out
 *.app
+
+# Python
+*.pyc
